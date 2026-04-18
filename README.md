@@ -1,6 +1,6 @@
 # 🌌 VM Pulse: Enterprise-Grade VM Management
 
-![Dashboard Mockup](/home/ztr/.gemini/antigravity/brain/12fb271e-6202-4ddf-97b8-ad0a8472407a/dashboard_mockup_1776488273752.png)
+![Dashboard Mockup](assets/dashboard_mockup.png)
 
 **VM Pulse** is a premium, agentless management platform for virtual infrastructure. Engineered with **Go** and **React**, it provides secure, real-time observability and control over remote Linux servers through an intuitive, dark-mode-first interface.
 
