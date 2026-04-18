@@ -1,0 +1,9 @@
+version: "1.0.0"
+linters:
+  enable:
+    - gofmt
+    - govet
+    - errcheck
+    - staticcheck
+run:
+  timeout: 5m
