@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package telemetry;
+option go_package = "internal/api/grpc/telemetry";
+
+// Certificate Signing Request Service
+service AgentIdentity {
+  rpc SignCSR (CSRRequest) returns (CSRResponse);
+}
+
+message CSRRequest {
+  string vm_id = 1;
+  bytes csr_pem = 2;
+}
+
+message CSRResponse {
+  bytes certificate_pem = 1;
+  bytes ca_certificate_pem = 2;
+}
+
+// Telemetry Ingestion Service
+service TelemetryIngestion {
+  rpc StreamMetricsBatch (stream MetricsBatch) returns (IngestionAck);
+  rpc StreamLogsBatch (stream LogsBatch) returns (IngestionAck);
+}
+
+message MetricsBatch {
+  string vm_id = 1;
+  repeated MetricSample samples = 2;
+}
+
+message MetricSample {
+  int64 timestamp = 1;
+  double cpu_usage_percent = 2;
+  uint64 memory_used_bytes = 3;
+  uint64 memory_total_bytes = 4;
+  double disk_usage_percent = 5;
+  uint64 network_tx_bytes = 6;
+  uint64 network_rx_bytes = 7;
+}
+
+message LogsBatch {
+  string vm_id = 1;
+  repeated LogEntry entries = 2;
+}
+
+message LogEntry {
+  int64 timestamp = 1;
+  string severity = 2;
+  string component = 3;
+  string message = 4;
+}
+
+message IngestionAck {
+  int32 processed_count = 1;
+}
