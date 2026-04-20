@@ -45,11 +45,11 @@ description: "Task list for Telemetry Agent Hardening implementation"
 
 ### Implementation for User Story 1
 
-- [ ] T004 [P] [US1] Define OTT and Certificate data models in `backend/internal/models/models.go`
-- [ ] T005 [P] [US1] Implement ECDSA P-256 key generation with 0600 permissions in `backend/internal/crypto/keys.go`
-- [ ] T006 [US1] Update backend CSR endpoint to validate OTT in `backend/internal/api/grpc/telemetry/csr.go`
-- [ ] T007 [P] [US1] Implement CRL validation gRPC interceptor in `backend/internal/api/grpc/interceptors/crl.go`
-- [ ] T008 [US1] Implement agent cert auto-renewal logic via mTLS in `backend/internal/agent/telemetry/client.go`
+- [x] T004 [P] [US1] Define OTT and Certificate data models in `backend/internal/models/models.go`
+- [x] T005 [P] [US1] Implement ECDSA P-256 key generation with 0600 permissions in `backend/internal/crypto/keys.go`
+- [x] T006 [US1] Update backend CSR endpoint to validate OTT in `backend/internal/api/grpc/telemetry/csr.go`
+- [x] T007 [P] [US1] Implement CRL validation gRPC interceptor in `backend/internal/api/grpc/interceptors/crl.go`
+- [x] T008 [US1] Implement agent cert auto-renewal logic via mTLS in `backend/internal/agent/telemetry/client.go`
 
 **Checkpoint**: At this point, User Story 1 should be fully functional and testable independently
 

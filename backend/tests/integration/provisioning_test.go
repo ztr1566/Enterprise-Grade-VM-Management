@@ -76,6 +76,8 @@ func setupTestDB(t *testing.T) *sql.DB {
 		"../../internal/db/migrations/004_vm_access.sql",
 		"../../internal/db/migrations/005_identity_refactor.sql",
 		"../../internal/db/migrations/006_telemetry.sql",
+		"../../internal/db/migrations/007_agent_tokens.sql",
+		"../../internal/db/migrations/008_agent_certificates.sql",
 	}
 
 	for _, m := range migrations {
@@ -165,7 +167,7 @@ func TestZeroTrustTelemetry(t *testing.T) {
 
 	lis := bufconn.Listen(1024 * 1024)
 	s := grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
-	telemetry.RegisterAgentIdentityServer(s, telemetry.NewIdentityHandler(caInst))
+	telemetry.RegisterAgentIdentityServer(s, telemetry.NewIdentityHandler(caInst, db))
 	telemetry.RegisterTelemetryIngestionServer(s, telemetry.NewTelemetryHandler(db))
 	
 	go func() {

@@ -182,3 +182,69 @@ func GetAuditLogs(db *sql.DB, limit, offset int) ([]AuditLog, int, error) {
 	}
 	return logs, total, nil
 }
+
+// AgentToken represents an OTT used for agent enrollment.
+type AgentToken struct {
+	ID        string     `json:"id"`
+	TokenHash string     `json:"-"`
+	MachineID string     `json:"machine_id"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	UsedAt    *time.Time `json:"used_at,omitempty"`
+}
+
+// AgentCertificate tracks issued mTLS certificates.
+type AgentCertificate struct {
+	SerialNumber     string     `json:"serial_number"`
+	MachineID        string     `json:"machine_id"`
+	IssuedAt         time.Time  `json:"issued_at"`
+	ExpiresAt        time.Time  `json:"expires_at"`
+	RevokedAt        *time.Time `json:"revoked_at,omitempty"`
+	RevocationReason string     `json:"revocation_reason,omitempty"`
+}
+
+// CreateAgentToken persists a new OTT.
+func CreateAgentToken(db *sql.DB, token AgentToken) error {
+	_, err := db.Exec(
+		`INSERT INTO agent_tokens (id, token_hash, machine_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
+		token.ID, token.TokenHash, token.MachineID, token.CreatedAt, token.ExpiresAt)
+	return err
+}
+
+// GetAgentTokenByHash retrieves a token by its SHA256 hash.
+func GetAgentTokenByHash(db *sql.DB, hash string) (*AgentToken, error) {
+	var t AgentToken
+	var usedAt *time.Time
+	err := db.QueryRow(`SELECT id, token_hash, machine_id, created_at, expires_at, used_at FROM agent_tokens WHERE token_hash = ?`, hash).
+		Scan(&t.ID, &t.TokenHash, &t.MachineID, &t.CreatedAt, &t.ExpiresAt, &usedAt)
+	if err != nil {
+		return nil, err
+	}
+	t.UsedAt = usedAt
+	return &t, nil
+}
+
+// MarkTokenUsed records the timestamp when an OTT was consumed.
+func MarkTokenUsed(db *sql.DB, id string) error {
+	_, err := db.Exec(`UPDATE agent_tokens SET used_at = ? WHERE id = ?`, time.Now(), id)
+	return err
+}
+
+// CreateAgentCertificate records a newly issued certificate.
+func CreateAgentCertificate(db *sql.DB, cert AgentCertificate) error {
+	_, err := db.Exec(
+		`INSERT INTO agent_certificates (serial_number, machine_id, issued_at, expires_at) VALUES (?, ?, ?, ?)`,
+		cert.SerialNumber, cert.MachineID, cert.IssuedAt, cert.ExpiresAt)
+	return err
+}
+
+// IsCertificateRevoked checks if a certificate serial is in the CRL.
+func IsCertificateRevoked(db *sql.DB, serial string) (bool, error) {
+	var count int
+	err := db.QueryRow(`SELECT count(*) FROM agent_certificates WHERE serial_number = ? AND revoked_at IS NOT NULL`, serial).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+

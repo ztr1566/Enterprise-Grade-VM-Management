@@ -16,6 +16,7 @@ import (
 	"backend/internal/ws"
 	"backend/internal/ca"
 	"backend/internal/api/grpc/telemetry"
+	"backend/internal/api/grpc/interceptors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"crypto/tls"
@@ -225,10 +226,14 @@ func main() {
 			MinVersion:   tls.VersionTLS13,
 		}
 
-		grpcServer := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
+		grpcServer := grpc.NewServer(
+			grpc.Creds(credentials.NewTLS(tlsConfig)),
+			grpc.UnaryInterceptor(interceptors.CRLInterceptor(sqliteDB)),
+			grpc.StreamInterceptor(interceptors.CRLStreamInterceptor(sqliteDB)),
+		)
 
 		// Register Identity Handler
-		telemetry.RegisterAgentIdentityServer(grpcServer, telemetry.NewIdentityHandler(caInst))
+		telemetry.RegisterAgentIdentityServer(grpcServer, telemetry.NewIdentityHandler(caInst, sqliteDB))
 		// Register Telemetry Ingestion Handler
 		telemetry.RegisterTelemetryIngestionServer(grpcServer, telemetry.NewTelemetryHandler(sqliteDB))
 

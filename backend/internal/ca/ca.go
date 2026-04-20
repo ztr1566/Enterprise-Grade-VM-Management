@@ -129,19 +129,19 @@ func createCA(certPath, keyPath string) (*CA, error) {
 	}, nil
 }
 
-func (ca *CA) SignCSR(csrPEM []byte) ([]byte, error) {
+func (ca *CA) SignCSR(csrPEM []byte, duration time.Duration) ([]byte, string, error) {
 	block, _ := pem.Decode(csrPEM)
 	if block == nil {
-		return nil, fmt.Errorf("failed to decode CSR PEM")
+		return nil, "", fmt.Errorf("failed to decode CSR PEM")
 	}
 
 	csr, err := x509.ParseCertificateRequest(block.Bytes)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	if err := csr.CheckSignature(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	serialNumber, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
@@ -149,17 +149,17 @@ func (ca *CA) SignCSR(csrPEM []byte) ([]byte, error) {
 		SerialNumber: serialNumber,
 		Subject:      csr.Subject,
 		NotBefore:    time.Now(),
-		NotAfter:     time.Now().AddDate(1, 0, 0),
+		NotAfter:     time.Now().Add(duration),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 
 	certBytes, err := x509.CreateCertificate(rand.Reader, template, ca.Cert, csr.PublicKey, ca.Key)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certBytes}), nil
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certBytes}), fmt.Sprintf("%x", serialNumber), nil
 }
 
 func (ca *CA) GenerateServerCertificate(dataDir, host string) ([]byte, []byte, error) {
