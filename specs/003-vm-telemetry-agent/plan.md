@@ -1,6 +1,6 @@
 # Implementation Plan: VM Telemetry Agent
 
-**Branch**: `002-v2-enterprise-upgrade` | **Date**: 2026-04-19 | **Spec**: [specs/003-vm-telemetry-agent/spec.md](spec.md)
+**Branch**: `003-vm-telemetry-agent` | **Date**: 2026-04-19 | **Spec**: [specs/003-vm-telemetry-agent/spec.md](spec.md)
 **Input**: Feature specification from `/specs/003-vm-telemetry-agent/spec.md`
 
 ## Summary

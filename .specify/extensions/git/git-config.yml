@@ -49,8 +49,8 @@ auto_commit:
     enabled: false
     message: "[Spec Kit] Add tasks"
   after_implement:
-    enabled: false
-    message: "[Spec Kit] Implementation progress"
+    enabled: true
+    message: "[Spec Kit] Implementation of Phase 6 and final review fixes"
   after_checklist:
     enabled: false
     message: "[Spec Kit] Add checklist"

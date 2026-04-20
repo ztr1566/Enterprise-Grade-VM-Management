@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
+	"backend/internal/db"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"backend/internal/api"
@@ -203,7 +205,7 @@ func (h *VMHandler) GetVM(w http.ResponseWriter, r *http.Request) {
 
 
 
-// GetVMStats returns real-time CPU/RAM/Disk metrics for a VM via SSH.
+// GetVMStats returns the latest agent-pushed CPU/RAM/Disk metrics for a VM from the database.
 func (h *VMHandler) GetVMStats(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -211,17 +213,33 @@ func (h *VMHandler) GetVMStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Support optional process search query
-	query := r.URL.Query().Get("q")
-	if query != "" {
-		h.Logger.Info("Received search query", zap.String("q", query))
+	// Phase 6: Fetch latest metrics from DB (agent-pushed) instead of polling via SSH
+	m, err := db.GetLatestMetrics(h.DB, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			api.WriteError(w, http.StatusNotFound, "No telemetry data available for this VM")
+		} else {
+			audit.Logger.Error("Failed to fetch VM metrics from DB", zap.Error(err), zap.String("vmID", id))
+			api.WriteError(w, http.StatusInternalServerError, "Failed to fetch VM metrics")
+		}
+		return
 	}
 
-	stats, err := monitor.GetVMStats(h.DB, id, query)
-	if err != nil {
-		audit.Logger.Error("Failed to fetch VM stats", zap.Error(err), zap.String("vmID", id))
-		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch VM metrics")
-		return
+	// Map DB metrics to the expected API response
+	stats := &monitor.VMStats{
+		CPU:  m.CpuUsagePercent,
+		RAM: func() float64 {
+			if m.MemoryTotalBytes == 0 {
+				return 0
+			}
+			return float64(m.MemoryUsedBytes) / float64(m.MemoryTotalBytes) * 100
+		}(),
+		Disk: m.DiskUsagePercent,
+		Network: &monitor.NetworkMetrics{
+			RxBytesSec: 0, // Rate calculation requires two samples, for now return 0 or implement in DB
+			TxBytesSec: 0,
+		},
+		Timestamp: time.UnixMilli(m.Timestamp),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
