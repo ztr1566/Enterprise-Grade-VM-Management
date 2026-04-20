@@ -21,3 +21,12 @@ backend/cmd/agent/agent
 
 # Generated protobuf (regenerated via protoc)
 *.pb.go
+
+# Build artifacts
+backend/bin/
+
+# Runtime database
+*.db
+
+# Generated CA material (keys are secrets)
+backend/data/ca/

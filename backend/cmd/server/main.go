@@ -111,6 +111,26 @@ func main() {
 	}
 	audit.Logger.Info("Migration 006 applied")
 
+	// 3g. Run Migration 007: Agent Tokens (OTT)
+	migration007, err := os.ReadFile("internal/db/migrations/007_agent_tokens.sql")
+	if err != nil {
+		audit.Logger.Fatal("Failed to read migration 007", zap.Error(err))
+	}
+	if _, err := sqliteDB.Exec(string(migration007)); err != nil {
+		audit.Logger.Fatal("Failed to run migration 007", zap.Error(err))
+	}
+	audit.Logger.Info("Migration 007 applied")
+
+	// 3h. Run Migration 008: Agent Certificates
+	migration008, err := os.ReadFile("internal/db/migrations/008_agent_certificates.sql")
+	if err != nil {
+		audit.Logger.Fatal("Failed to read migration 008", zap.Error(err))
+	}
+	if _, err := sqliteDB.Exec(string(migration008)); err != nil {
+		audit.Logger.Fatal("Failed to run migration 008", zap.Error(err))
+	}
+	audit.Logger.Info("Migration 008 applied")
+
 	// 4. Initialize Handlers
 	authHandler := &handlers.AuthHandler{DB: sqliteDB}
 	vmHandler := handlers.NewVMHandler(sqliteDB, audit.Logger)

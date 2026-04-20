@@ -20,7 +20,7 @@ description: "Task list for Telemetry Agent Hardening implementation"
 
 **Purpose**: Project initialization and basic structure
 
-- [ ] T001 Create agent governance directory `backend/internal/agent/governance/`
+- [x] T001 Create agent governance directory `backend/internal/agent/governance/`
 
 ---
 
@@ -30,8 +30,8 @@ description: "Task list for Telemetry Agent Hardening implementation"
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T002 [P] Create `agent_tokens` table migration in `backend/internal/store/migrations/003_agent_tokens.sql`
-- [ ] T003 [P] Create `agent_certificates` table migration in `backend/internal/store/migrations/004_agent_certificates.sql`
+- [x] T002 [P] Create `agent_tokens` table migration in `backend/internal/db/migrations/007_agent_tokens.sql`
+- [x] T003 [P] Create `agent_certificates` table migration in `backend/internal/db/migrations/008_agent_certificates.sql`
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
@@ -45,7 +45,7 @@ description: "Task list for Telemetry Agent Hardening implementation"
 
 ### Implementation for User Story 1
 
-- [ ] T004 [P] [US1] Define OTT and Certificate data models in `backend/internal/store/models.go`
+- [ ] T004 [P] [US1] Define OTT and Certificate data models in `backend/internal/models/models.go`
 - [ ] T005 [P] [US1] Implement ECDSA P-256 key generation with 0600 permissions in `backend/internal/crypto/keys.go`
 - [ ] T006 [US1] Update backend CSR endpoint to validate OTT in `backend/internal/api/grpc/telemetry/csr.go`
 - [ ] T007 [P] [US1] Implement CRL validation gRPC interceptor in `backend/internal/api/grpc/interceptors/crl.go`
