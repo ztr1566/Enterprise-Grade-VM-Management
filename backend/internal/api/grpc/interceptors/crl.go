@@ -16,7 +16,7 @@ import (
 // CRLInterceptor returns a UnaryServerInterceptor that validates client certificates against the CRL.
 func CRLInterceptor(db *sql.DB) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		// Skip CRL check for EnrollAgent (CSR bootstrap)
+		// Skip CRL check for SignCSR (CSR bootstrap)
 		if info.FullMethod == "/telemetry.AgentIdentity/SignCSR" {
 			return handler(ctx, req)
 		}
