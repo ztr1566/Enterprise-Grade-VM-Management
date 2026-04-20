@@ -15,3 +15,9 @@ Thumbs.db
 *.swp
 .vscode/
 .idea/
+
+# Agent binary
+backend/cmd/agent/agent
+
+# Generated protobuf (regenerated via protoc)
+*.pb.go

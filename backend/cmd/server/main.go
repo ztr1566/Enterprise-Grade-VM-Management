@@ -14,6 +14,13 @@ import (
 	"backend/internal/db"
 	"backend/internal/monitor"
 	"backend/internal/ws"
+	"backend/internal/ca"
+	"backend/internal/api/grpc/telemetry"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"crypto/tls"
+	"crypto/x509"
+	"net"
 )
 
 func main() {
@@ -94,6 +101,16 @@ func main() {
 		audit.Logger.Info("Migration 005 already applied (column renamed)")
 	}
 
+	// 3f. Run Migration 006: Telemetry Tables
+	migration006, err := os.ReadFile("internal/db/migrations/006_telemetry.sql")
+	if err != nil {
+		audit.Logger.Fatal("Failed to read migration 006", zap.Error(err))
+	}
+	if _, err := sqliteDB.Exec(string(migration006)); err != nil {
+		audit.Logger.Fatal("Failed to run migration 006", zap.Error(err))
+	}
+	audit.Logger.Info("Migration 006 applied")
+
 	// 4. Initialize Handlers
 	authHandler := &handlers.AuthHandler{DB: sqliteDB}
 	vmHandler := handlers.NewVMHandler(sqliteDB, audit.Logger)
@@ -158,7 +175,53 @@ func main() {
 	mux.Handle("GET /api/vms/{id}/logs/{service}", middleware.AuthMiddleware(http.HandlerFunc(logHandler.ServeLogs)))
 
 	// 5b. Start background VM status pinger
-	monitor.StartPinger(sqliteDB)
+	// monitor.StartPinger(sqliteDB) // Phase 6: Deprecated in favor of agent telemetry
+ 
+	// 5c. Start gRPC Server for Telemetry and Identity
+	go func() {
+		caInst, err := ca.LoadOrCreateCA("data/ca")
+		if err != nil {
+			audit.Logger.Fatal("Failed to load/create CA", zap.Error(err))
+		}
+
+		// Generate server cert for localhost/internal use
+		serverCertPEM, serverKeyPEM, err := caInst.GenerateServerCertificate("data/ca", "localhost")
+		if err != nil {
+			audit.Logger.Fatal("Failed to generate server certificate", zap.Error(err))
+		}
+
+		serverCert, err := tls.X509KeyPair(serverCertPEM, serverKeyPEM)
+		if err != nil {
+			audit.Logger.Fatal("Failed to load server key pair", zap.Error(err))
+		}
+
+		certPool := x509.NewCertPool()
+		certPool.AppendCertsFromPEM(caInst.CertBytes)
+
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{serverCert},
+			ClientAuth:   tls.VerifyClientCertIfGiven, // Allow unauthenticated CSR bootstrap
+			ClientCAs:    certPool,
+			MinVersion:   tls.VersionTLS13,
+		}
+
+		grpcServer := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
+
+		// Register Identity Handler
+		telemetry.RegisterAgentIdentityServer(grpcServer, telemetry.NewIdentityHandler(caInst))
+		// Register Telemetry Ingestion Handler
+		telemetry.RegisterTelemetryIngestionServer(grpcServer, telemetry.NewTelemetryHandler(sqliteDB))
+
+		lis, err := net.Listen("tcp", ":50051")
+		if err != nil {
+			audit.Logger.Fatal("gRPC failed to listen", zap.Error(err))
+		}
+
+		audit.Logger.Info("gRPC server listening", zap.String("port", "50051"))
+		if err := grpcServer.Serve(lis); err != nil {
+			audit.Logger.Fatal("gRPC server failed", zap.Error(err))
+		}
+	}()
 
 	// 6. Start blocking Server
 	port := "8080"
