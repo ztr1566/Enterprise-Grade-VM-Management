@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -29,7 +29,7 @@ type KeyHandler struct {
 // CreateKeyRequest defines the payload for importing or generating an SSH key.
 type CreateKeyRequest struct {
 	Name       string `json:"name"`
-	PrivateKey string `json:"private_key"` // Optional: PEM string. If empty, an Ed25519 key is generated.
+	PrivateKey string `json:"private_key"` // Optional: PEM string. If empty, a 4096-bit RSA key is generated.
 }
 
 // GetKeys handles listing all SSH key summaries (no private key data).
@@ -47,7 +47,7 @@ func (h *KeyHandler) GetKeys(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(keys)
 }
 
-// CreateKey handles importing a PEM private key or generating a new Ed25519 key pair.
+// CreateKey handles importing a PEM private key or generating a new RSA 4096-bit key pair.
 func (h *KeyHandler) CreateKey(w http.ResponseWriter, r *http.Request) {
 	var req CreateKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -63,10 +63,10 @@ func (h *KeyHandler) CreateKey(w http.ResponseWriter, r *http.Request) {
 	var publicKeyStr string
 
 	if req.PrivateKey == "" {
-		// Generate a new Ed25519 key pair
-		pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+		// Generate a new RSA 4096-bit key pair
+		privKey, err := rsa.GenerateKey(rand.Reader, 4096)
 		if err != nil {
-			audit.Logger.Error("Failed to generate Ed25519 key", zap.Error(err))
+			audit.Logger.Error("Failed to generate RSA key", zap.Error(err))
 			api.WriteError(w, http.StatusInternalServerError, "Failed to generate key pair")
 			return
 		}
@@ -81,7 +81,7 @@ func (h *KeyHandler) CreateKey(w http.ResponseWriter, r *http.Request) {
 		privatePEM = pem.EncodeToMemory(pemBlock)
 
 		// Marshal public key to OpenSSH authorized_keys format
-		sshPub, err := gossh.NewPublicKey(pubKey)
+		sshPub, err := gossh.NewPublicKey(&privKey.PublicKey)
 		if err != nil {
 			api.WriteError(w, http.StatusInternalServerError, "Failed to encode public key")
 			return

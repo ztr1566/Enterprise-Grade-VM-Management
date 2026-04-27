@@ -60,8 +60,12 @@ func main() {
 	// ALTER TABLE errors are expected on re-run (column already exists) — ignore them
 	for _, stmt := range splitSQL(string(migration002)) {
 		if _, err := sqliteDB.Exec(stmt); err != nil {
+			preview := stmt
+			if len(preview) > 60 {
+				preview = preview[:60]
+			}
 			audit.Logger.Warn("Migration 002 stmt skipped (likely already applied)",
-				zap.String("stmt", stmt[:min(60, len(stmt))]), zap.Error(err))
+				zap.String("stmt", preview), zap.Error(err))
 		}
 	}
 	audit.Logger.Info("Migration 002 applied")
@@ -258,21 +262,22 @@ func main() {
 }
 
 // splitSQL splits a SQL file into individual statements for safe execution.
-func splitSQL(sql string) []string {
+// It strips comment-only lines within each segment before filtering, so a
+// statement preceded by a "-- comment" line is not accidentally dropped.
+func splitSQL(content string) []string {
 	var stmts []string
-	for _, s := range strings.Split(sql, ";") {
-		s = strings.TrimSpace(s)
-		if s != "" && !strings.HasPrefix(s, "--") {
+	for _, segment := range strings.Split(content, ";") {
+		// Strip comment-only lines from the segment, then trim whitespace.
+		var lines []string
+		for _, line := range strings.Split(segment, "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "--") {
+				lines = append(lines, line)
+			}
+		}
+		s := strings.TrimSpace(strings.Join(lines, "\n"))
+		if s != "" {
 			stmts = append(stmts, s)
 		}
 	}
 	return stmts
-}
-
-// min returns the smaller of two ints (Go 1.21+ has this built-in, kept for compat).
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

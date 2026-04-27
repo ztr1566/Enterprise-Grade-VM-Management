@@ -121,7 +121,7 @@ const KeysManagement: React.FC = () => {
               <div>
                 <label className="block text-sm font-medium text-slate-400 mb-2">
                   Private Key (PEM)
-                  <span className="ml-2 text-slate-500 text-xs">— leave blank to auto-generate Ed25519</span>
+                  <span className="ml-2 text-slate-500 text-xs">— leave blank to auto-generate RSA 4096</span>
                 </label>
                 <textarea
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl py-2.5 px-4 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm min-h-[140px]"
