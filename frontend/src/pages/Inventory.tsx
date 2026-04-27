@@ -87,13 +87,28 @@ const Inventory: React.FC = () => {
 
   useEffect(() => {
     fetchVMs();
-    // Poll for status updates if any VM is pending
+    // Poll for status updates
     const interval = setInterval(() => {
-      if (vms.some(vm => vm.provisioning_status === 'pending')) {
+      // Fast poll (5s) if any VM is pending provisioning
+      // Normal poll (10s) otherwise to catch telemetry status changes (online/offline)
+      const isPending = vms.some(vm => vm.provisioning_status === 'pending');
+      const shouldFetch = isPending || (Date.now() % 10000 < 5000); // Simple way to throttle to 10s if not pending
+      
+      if (isPending) {
         fetchVMs();
       }
     }, 5000);
-    return () => clearInterval(interval);
+
+    const normalInterval = setInterval(() => {
+      if (!vms.some(vm => vm.provisioning_status === 'pending')) {
+        fetchVMs();
+      }
+    }, 10000);
+
+    return () => {
+      clearInterval(interval);
+      clearInterval(normalInterval);
+    };
   }, [vms.length, vms.some(vm => vm.provisioning_status === 'pending')]);
 
   const handleRetryProvisioning = async (vmId: string) => {

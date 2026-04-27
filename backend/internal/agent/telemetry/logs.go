@@ -9,13 +9,15 @@ import (
 	"strings"
 	"time"
 
+	"backend/internal/agent/governance"
 	"backend/internal/agent/wal"
 	"backend/internal/api/grpc/telemetry"
 )
 
 // LogCollector monitors a log file and pushes new entries to the WAL.
 type LogCollector struct {
-	WAL *wal.DiskWAL
+	WAL     *wal.DiskWAL
+	Monitor *governance.Monitor
 }
 
 // Run starts tailing the specified log file.
@@ -40,6 +42,11 @@ func (c *LogCollector) Run(ctx context.Context, logPath string) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
+			// Apply backpressure to log tailing
+			if c.Monitor != nil && c.Monitor.IsThrottled() {
+				continue
+			}
+
 			for {
 				line, err := reader.ReadString('\n')
 				if err != nil {

@@ -2,15 +2,18 @@ package integration
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
+	"encoding/hex"
 	"encoding/pem"
 	"io"
 	"log"
 	"net"
 	"os"
 	"testing"
+	"time"
 
 	"backend/internal/agent/bootstrap"
 	"backend/internal/api/grpc/telemetry"
@@ -24,6 +27,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -78,6 +82,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		"../../internal/db/migrations/006_telemetry.sql",
 		"../../internal/db/migrations/007_agent_tokens.sql",
 		"../../internal/db/migrations/008_agent_certificates.sql",
+		"../../internal/db/migrations/009_vm_last_seen.sql",
 	}
 
 	for _, m := range migrations {
@@ -183,6 +188,12 @@ func TestZeroTrustTelemetry(t *testing.T) {
 
 	// 2. Simulate Agent Bootstrap (CSR Flow)
 	vmID := "agent-007"
+	token := "bootstrap-token"
+	hash := sha256.Sum256([]byte(token))
+	hashStr := hex.EncodeToString(hash[:])
+	_, _ = db.Exec("INSERT INTO agent_tokens (id, machine_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+		"t1", vmID, hashStr, time.Now(), time.Now().Add(1*time.Hour))
+
 	key, _ := bootstrap.GenerateKey()
 	csrPEM, _ := bootstrap.GenerateCSR(key, vmID)
 
@@ -194,8 +205,9 @@ func TestZeroTrustTelemetry(t *testing.T) {
 		t.Fatalf("Failed to dial bufnet: %v", err)
 	}
 	
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+token)
 	idClient := telemetry.NewAgentIdentityClient(conn)
-	resp, err := idClient.SignCSR(context.Background(), &telemetry.CSRRequest{
+	resp, err := idClient.SignCSR(ctx, &telemetry.CSRRequest{
 		VmId:   vmID,
 		CsrPem: csrPEM,
 	})

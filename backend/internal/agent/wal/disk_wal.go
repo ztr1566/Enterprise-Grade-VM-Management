@@ -1,8 +1,6 @@
 package wal
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -10,21 +8,18 @@ import (
 	"sync"
 
 	"backend/internal/api/grpc/telemetry"
+	"google.golang.org/protobuf/proto"
 )
 
 const DefaultWALFile = "telemetry.wal"
 
-// WALEntry is a container for different types of telemetry data in the WAL.
-type WALEntry struct {
-	Metric *telemetry.MetricSample `json:"metric,omitempty"`
-	Log    *telemetry.LogEntry    `json:"log,omitempty"`
-}
-
-// DiskWAL implements a simple disk-backed Write-Ahead Log for buffering telemetry data.
+// DiskWAL implements a hardened disk-backed Write-Ahead Log for buffering telemetry data.
+// It wraps binary WALWriter and WALReader to provide high-level metric/log access.
 type DiskWAL struct {
-	mu      sync.Mutex
-	path    string
-	maxSize int64
+	mu     *sync.Mutex
+	path   string
+	writer *WALWriter
+	reader *WALReader
 }
 
 // NewDiskWAL initializes a new WAL in the specified directory.
@@ -32,84 +27,149 @@ func NewDiskWAL(dataDir string, maxSize int64) (*DiskWAL, error) {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return nil, err
 	}
+	path := filepath.Join(dataDir, DefaultWALFile)
+	
+	// Create common mutex for both DiskWAL operations and binary WALWriter
+	mu := &sync.Mutex{}
+	
+	// Spec: STARTUP → VERIFY_CHECKSUMS → TRUNCATE_CORRUPTED → READY
+	reader := NewWALReader(path)
+	recovered, err := reader.ReadAllAndRecover()
+	if err != nil {
+		log.Printf("WAL: recovery failed during startup: %v", err)
+	} else if len(recovered) > 0 {
+		log.Printf("WAL: successfully recovered %d entries during startup", len(recovered))
+	}
+
+	writer, err := NewWALWriter(path, maxSize, mu)
+	if err != nil {
+		return nil, err
+	}
+
 	return &DiskWAL{
-		path:    filepath.Join(dataDir, DefaultWALFile),
-		maxSize: maxSize,
+		mu:     mu,
+		path:   path,
+		writer: writer,
+		reader: reader,
 	}, nil
-}
-
-func (w *DiskWAL) push(entry *WALEntry) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	// Check size constraints
-	fi, err := os.Stat(w.path)
-	if err == nil && fi.Size() >= w.maxSize {
-		log.Printf("WARNING: WAL size limit reached (%d bytes), evicting all buffered entries", fi.Size())
-		if err := os.Truncate(w.path, 0); err != nil {
-			return fmt.Errorf("failed to evict WAL: %w", err)
-		}
-	}
-
-	f, err := os.OpenFile(w.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	// NOTE: encoding/json is used here because the WALEntry wrapper is a plain Go struct.
-	// Inner proto message fields are serialized via their json struct tags from protoc-gen-go.
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return err
-	}
-
-	_, err = f.Write(append(data, '\n'))
-	return err
 }
 
 // PushMetric appends a new metric sample to the WAL.
 func (w *DiskWAL) PushMetric(sample *telemetry.MetricSample) error {
-	return w.push(&WALEntry{Metric: sample})
+	data, err := proto.Marshal(sample)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metric: %w", err)
+	}
+	// Note: w.writer.Write already uses w.mu (since it was passed to NewWALWriter)
+	return w.writer.Write(&WALEntry{Type: EntryTypeMetric, Payload: data})
 }
 
 // PushLog appends a new log entry to the WAL.
-func (w *DiskWAL) PushLog(entry *telemetry.LogEntry) error {
-	return w.push(&WALEntry{Log: entry})
+func (w *DiskWAL) PushLog(sample *telemetry.LogEntry) error {
+	data, err := proto.Marshal(sample)
+	if err != nil {
+		return fmt.Errorf("failed to marshal log: %w", err)
+	}
+	// Note: w.writer.Write already uses w.mu
+	return w.writer.Write(&WALEntry{Type: EntryTypeLog, Payload: data})
 }
 
-// ReadAll returns all entries currently in the WAL.
-func (w *DiskWAL) ReadAll() ([]*WALEntry, error) {
+// ReadAllResult is a high-level container for entries read from the WAL.
+type ReadAllResult struct {
+	Metric *telemetry.MetricSample
+	Log    *telemetry.LogEntry
+}
+
+// ReadAll returns all valid entries currently in the WAL, recovering from corruption if needed.
+func (w *DiskWAL) ReadAll() ([]*ReadAllResult, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	f, err := os.Open(w.path)
+	entries, err := w.reader.ReadAllAndRecover()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	defer f.Close()
 
-	var entries []*WALEntry
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		var e WALEntry
-		// We can use encoding/json here since WALEntry is a plain Go struct
-		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
-			log.Printf("WARNING: skipping corrupt WAL entry: %v", err)
+	var results []*ReadAllResult
+	for _, e := range entries {
+		res := &ReadAllResult{}
+		switch e.Type {
+		case EntryTypeMetric:
+			m := &telemetry.MetricSample{}
+			if err := proto.Unmarshal(e.Payload, m); err != nil {
+				log.Printf("WAL: failed to unmarshal metric entry: %v", err)
+				continue
+			}
+			res.Metric = m
+		case EntryTypeLog:
+			l := &telemetry.LogEntry{}
+			if err := proto.Unmarshal(e.Payload, l); err != nil {
+				log.Printf("WAL: failed to unmarshal log entry: %v", err)
+				continue
+			}
+			res.Log = l
+		default:
+			log.Printf("WAL: unknown entry type 0x%02x", e.Type)
 			continue
 		}
-		entries = append(entries, &e)
+		results = append(results, res)
 	}
 
-	return entries, nil
+	return results, nil
+}
+
+// ReadAllAndClear atomically reads all entries and clears the WAL under a single lock.
+// This prevents data loss from writes that sneak in between a separate ReadAll + Clear.
+func (w *DiskWAL) ReadAllAndClear() ([]*ReadAllResult, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	entries, err := w.reader.ReadAllAndRecover()
+	if err != nil {
+		return nil, err
+	}
+
+	var results []*ReadAllResult
+	for _, e := range entries {
+		res := &ReadAllResult{}
+		switch e.Type {
+		case EntryTypeMetric:
+			m := &telemetry.MetricSample{}
+			if err := proto.Unmarshal(e.Payload, m); err != nil {
+				log.Printf("WAL: failed to unmarshal metric entry: %v", err)
+				continue
+			}
+			res.Metric = m
+		case EntryTypeLog:
+			l := &telemetry.LogEntry{}
+			if err := proto.Unmarshal(e.Payload, l); err != nil {
+				log.Printf("WAL: failed to unmarshal log entry: %v", err)
+				continue
+			}
+			res.Log = l
+		default:
+			log.Printf("WAL: unknown entry type 0x%02x", e.Type)
+			continue
+		}
+		results = append(results, res)
+	}
+
+	// Clear while still holding the lock — no writes can sneak in
+	if err := w.writer.clearUnlocked(); err != nil {
+		return results, fmt.Errorf("WAL clear after read failed: %w", err)
+	}
+
+	return results, nil
 }
 
 // Clear removes all entries from the WAL.
 func (w *DiskWAL) Clear() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return os.Truncate(w.path, 0)
+	// writer.Clear already uses w.mu
+	return w.writer.Clear()
+}
+
+// Close closes the underlying WAL file.
+func (w *DiskWAL) Close() error {
+	// writer.Close already uses w.mu
+	return w.writer.Close()
 }

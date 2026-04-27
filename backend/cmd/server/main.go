@@ -1,27 +1,35 @@
 package main
 
 import (
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"database/sql"
+	"encoding/hex"
+	"flag"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
-	"github.com/joho/godotenv"
-	"go.uber.org/zap"
+	"backend/internal/api/grpc/interceptors"
+	"backend/internal/api/grpc/telemetry"
 	"backend/internal/api/handlers"
 	"backend/internal/api/middleware"
 	"backend/internal/audit"
+	"backend/internal/ca"
 	"backend/internal/db"
+	"backend/internal/models"
 	"backend/internal/monitor"
 	"backend/internal/ws"
-	"backend/internal/ca"
-	"backend/internal/api/grpc/telemetry"
-	"backend/internal/api/grpc/interceptors"
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"crypto/tls"
-	"crypto/x509"
-	"net"
 )
 
 func main() {
@@ -53,22 +61,22 @@ func main() {
 	audit.Logger.Info("Database migrations applied successfully")
 
 	// 3b. Run Migration 002: SSH Key Vault
-	migration002, err := os.ReadFile("internal/db/migrations/002_ssh_keys.sql")
-	if err != nil {
-		audit.Logger.Fatal("Failed to read migration 002", zap.Error(err))
-	}
-	// ALTER TABLE errors are expected on re-run (column already exists) — ignore them
-	for _, stmt := range splitSQL(string(migration002)) {
-		if _, err := sqliteDB.Exec(stmt); err != nil {
-			preview := stmt
-			if len(preview) > 60 {
-				preview = preview[:60]
-			}
-			audit.Logger.Warn("Migration 002 stmt skipped (likely already applied)",
-				zap.String("stmt", preview), zap.Error(err))
+	var count2 int
+	_ = sqliteDB.QueryRow("SELECT count(*) FROM pragma_table_info('vms') WHERE name='key_id'").Scan(&count2)
+	if count2 == 0 {
+		migration002, err := os.ReadFile("internal/db/migrations/002_ssh_keys.sql")
+		if err != nil {
+			audit.Logger.Fatal("Failed to read migration 002", zap.Error(err))
 		}
+		for _, stmt := range splitSQL(string(migration002)) {
+			if _, err := sqliteDB.Exec(stmt); err != nil {
+				audit.Logger.Fatal("Failed to run migration 002", zap.Error(err))
+			}
+		}
+		audit.Logger.Info("Migration 002 applied")
+	} else {
+		audit.Logger.Info("Migration 002 already applied")
 	}
-	audit.Logger.Info("Migration 002 applied")
  
 	// 3c. Run Migration 003: Provisioning Records
 	migration003, err := os.ReadFile("internal/db/migrations/003_provisioning.sql")
@@ -136,7 +144,35 @@ func main() {
 	}
 	audit.Logger.Info("Migration 008 applied")
 
-	// 4. Initialize Handlers
+	// 3i. Run Migration 009: VM Last Seen
+	var count9 int
+	_ = sqliteDB.QueryRow("SELECT count(*) FROM pragma_table_info('vms') WHERE name='last_seen_at'").Scan(&count9)
+	if count9 == 0 {
+		migration009, err := os.ReadFile("internal/db/migrations/009_vm_last_seen.sql")
+		if err != nil {
+			audit.Logger.Fatal("Failed to read migration 009", zap.Error(err))
+		}
+		if _, err := sqliteDB.Exec(string(migration009)); err != nil {
+			audit.Logger.Fatal("Failed to run migration 009", zap.Error(err))
+		}
+		audit.Logger.Info("Migration 009 applied")
+	} else {
+		audit.Logger.Info("Migration 009 already applied")
+	}
+ 
+	// 4. CLI Subcommands
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "provision-token":
+			provisionToken(sqliteDB)
+			return
+		case "revoke-agent":
+			revokeAgent(sqliteDB)
+			return
+		}
+	}
+ 
+	// 5. Initialize Handlers
 	authHandler := &handlers.AuthHandler{DB: sqliteDB}
 	vmHandler := handlers.NewVMHandler(sqliteDB, audit.Logger)
 	keyHandler := &handlers.KeyHandler{DB: sqliteDB}
@@ -199,9 +235,23 @@ func main() {
 	// Protected WebSocket Log Route (T035/T036 – Phase 8)
 	mux.Handle("GET /api/vms/{id}/logs/{service}", middleware.AuthMiddleware(http.HandlerFunc(logHandler.ServeLogs)))
 
-	// 5b. Start background VM status pinger
-	// monitor.StartPinger(sqliteDB) // Phase 6: Deprecated in favor of agent telemetry
- 
+	// 5b. Start background VM status checker (marks as offline after 30s of silence)
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		for range ticker.C {
+			// Mark as offline if no telemetry in last 60 seconds (grace period)
+			_, err := sqliteDB.Exec(`
+				UPDATE vms 
+				SET status = 'offline' 
+				WHERE status = 'online' 
+				AND (last_seen_at IS NULL OR datetime(last_seen_at) < datetime('now', '-60 seconds'))
+			`)
+			if err != nil {
+				audit.Logger.Error("Background status checker failed", zap.Error(err))
+			}
+		}
+	}()
+
 	// 5c. Start gRPC Server for Telemetry and Identity
 	go func() {
 		caInst, err := ca.LoadOrCreateCA("data/ca")
@@ -233,7 +283,10 @@ func main() {
 		grpcServer := grpc.NewServer(
 			grpc.Creds(credentials.NewTLS(tlsConfig)),
 			grpc.UnaryInterceptor(interceptors.CRLInterceptor(sqliteDB)),
-			grpc.StreamInterceptor(interceptors.CRLStreamInterceptor(sqliteDB)),
+			grpc.ChainStreamInterceptor(
+				interceptors.CRLStreamInterceptor(sqliteDB),
+				interceptors.PayloadSizeInterceptor(),
+			),
 		)
 
 		// Register Identity Handler
@@ -281,3 +334,52 @@ func splitSQL(content string) []string {
 	}
 	return stmts
 }
+
+func provisionToken(db *sql.DB) {
+	fs := flag.NewFlagSet("provision-token", flag.ExitOnError)
+	machineID := fs.String("machine-id", "", "ID of the machine to provision")
+	fs.Parse(os.Args[2:])
+
+	if *machineID == "" {
+		fmt.Println("Error: --machine-id is required")
+		os.Exit(1)
+	}
+
+	token := uuid.New().String()
+	hash := sha256.Sum256([]byte(token))
+	hashStr := hex.EncodeToString(hash[:])
+
+	agentToken := models.AgentToken{
+		ID:        uuid.New().String(),
+		MachineID: *machineID,
+		TokenHash: hashStr,
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+	}
+
+	if err := models.CreateAgentToken(db, agentToken); err != nil {
+		fmt.Printf("Error: failed to persist token: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Token: %s\n(Valid for 10 minutes for machine: %s)\n", token, *machineID)
+}
+
+func revokeAgent(db *sql.DB) {
+	fs := flag.NewFlagSet("revoke-agent", flag.ExitOnError)
+	machineID := fs.String("machine-id", "", "ID of the machine to revoke")
+	fs.Parse(os.Args[2:])
+
+	if *machineID == "" {
+		fmt.Println("Error: --machine-id is required")
+		os.Exit(1)
+	}
+
+	if err := models.RevokeAgentCertificates(db, *machineID); err != nil {
+		fmt.Printf("Error: failed to revoke agent: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Successfully revoked all certificates for machine: %s\n", *machineID)
+}
+

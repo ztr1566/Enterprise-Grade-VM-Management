@@ -39,6 +39,19 @@ func (h *TelemetryHandler) StreamLogsBatch(stream TelemetryIngestion_StreamLogsB
 			return err
 		}
 
+		// Update VM status to online
+		res, err := h.DB.Exec(`UPDATE vms SET status='online', last_seen_at=CURRENT_TIMESTAMP WHERE id=?`, batch.VmId)
+		if err != nil {
+			log.Printf("Failed to update status for VM %s: %v", batch.VmId, err)
+		} else {
+			rows, _ := res.RowsAffected()
+			if rows == 0 {
+				log.Printf("WARNING: Log batch received for UNKNOWN VM ID: %s. Ensure agent VM_ID matches dashboard ID.", batch.VmId)
+			} else {
+				log.Printf("Heartbeat (log) received: VM %s is now ONLINE", batch.VmId)
+			}
+		}
+
 		totalProcessed += int32(len(batch.Entries))
 	}
 }

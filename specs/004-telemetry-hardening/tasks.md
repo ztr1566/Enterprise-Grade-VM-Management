@@ -63,9 +63,9 @@ description: "Task list for Telemetry Agent Hardening implementation"
 
 ### Implementation for User Story 2
 
-- [ ] T009 [P] [US2] Update WAL entry format to include CRC32 checksums in `backend/internal/agent/wal/entry.go`
-- [ ] T010 [US2] Implement fsync logic (every 10 batches) and 50MB eviction policy in `backend/internal/agent/wal/writer.go`
-- [ ] T011 [US2] Implement truncating recovery scan on startup in `backend/internal/agent/wal/reader.go`
+- [X] T009 [P] [US2] Update WAL entry format to include CRC32 checksums in `backend/internal/agent/wal/entry.go`
+- [X] T010 [US2] Implement fsync logic (every 10 batches) and 50MB eviction policy in `backend/internal/agent/wal/writer.go`
+- [X] T011 [US2] Implement truncating recovery scan on startup in `backend/internal/agent/wal/reader.go`
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently
 
@@ -79,9 +79,9 @@ description: "Task list for Telemetry Agent Hardening implementation"
 
 ### Implementation for User Story 3
 
-- [ ] T012 [P] [US3] Implement internal ticker-based resource monitor in `backend/internal/agent/governance/monitor.go`
-- [ ] T013 [P] [US3] Expose local HTTP health endpoint (`/health`) in `backend/internal/agent/telemetry/health.go`
-- [ ] T014 [US3] Integrate monitor backpressure into telemetry collector in `backend/internal/agent/telemetry/collector.go`
+- [x] T012 [P] [US3] Implement internal ticker-based resource monitor in `backend/internal/agent/governance/monitor.go`
+- [x] T013 [P] [US3] Expose local HTTP health endpoint (`/health`) in `backend/internal/agent/telemetry/health.go`
+- [x] T014 [US3] Integrate monitor backpressure into telemetry collector in `backend/internal/agent/telemetry/streamer.go`
 
 **Checkpoint**: All user stories up to US3 should now be independently functional
 
@@ -95,9 +95,9 @@ description: "Task list for Telemetry Agent Hardening implementation"
 
 ### Implementation for User Story 4
 
-- [ ] T015 [P] [US4] Implement 4MB payload enforcement interceptor in `backend/internal/api/grpc/interceptors/payload.go`
-- [ ] T016 [US4] Update agent to measure and split large payloads in `backend/internal/agent/telemetry/sender.go`
-- [ ] T017 [US4] Implement exponential backoff (1s-60s) with jitter in `backend/internal/agent/telemetry/connection.go`
+- [x] T015 [P] [US4] Implement 4MB payload enforcement interceptor in `backend/internal/api/grpc/interceptors/payload.go`
+- [x] T016 [US4] Update agent to measure and split large payloads in `backend/internal/agent/telemetry/sender.go`
+- [x] T017 [US4] Implement exponential backoff (1s-60s) with jitter in `backend/internal/agent/telemetry/connection.go`
 
 **Checkpoint**: All user stories should now be independently functional
 
@@ -107,9 +107,9 @@ description: "Task list for Telemetry Agent Hardening implementation"
 
 **Purpose**: Execute specific failure scenarios to confirm checklists pass.
 
-- [ ] T018 [P] Implement integration test for expired OTT and revoked cert failures in `backend/tests/integration/csr_test.go`
-- [ ] T019 [P] Implement integration test for simulated WAL corruption and power loss in `backend/tests/integration/wal_test.go`
-- [ ] T020 Run quickstart.md validation to ensure end-to-end agent operability
+- [x] T018 [P] Implement integration test for expired OTT and revoked cert failures in `backend/tests/integration/csr_test.go`
+- [x] T019 [P] Implement integration test for simulated WAL corruption and power loss in `backend/tests/integration/wal_test.go`
+- [x] T020 Run quickstart.md validation to ensure end-to-end agent operability
 
 ---
 

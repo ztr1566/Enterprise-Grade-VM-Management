@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"backend/internal/agent/bootstrap"
+	"backend/internal/agent/governance"
 	agentTelemetry "backend/internal/agent/telemetry"
 	"backend/internal/agent/wal"
 	"backend/internal/api/grpc/telemetry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 )
 
 func main() {
@@ -33,13 +35,26 @@ func main() {
 
 	if !bootstrap.HasIdentity(dataDir) {
 		fmt.Println("No identity found. Starting bootstrap flow...")
-		if err := runBootstrap(dataDir, backendURL, vmID); err != nil {
+		ott := os.Getenv("AGENT_OTT")
+		if ott == "" {
+			log.Fatal("Bootstrap required but AGENT_OTT environment variable is not set.")
+		}
+		if err := runBootstrap(dataDir, backendURL, vmID, ott); err != nil {
 			log.Fatalf("Bootstrap failed: %v", err)
 		}
 		fmt.Println("Bootstrap successful.")
 	} else {
 		fmt.Println("Identity found. Ready to stream.")
 	}
+
+	// Phase 5: Initialize resource governance
+	monitor := governance.NewMonitor()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go monitor.Start(ctx)
+	agentTelemetry.StartHealthServer("localhost:8081", monitor)
+	fmt.Println("Resource monitor and health server (localhost:8081) started.")
 
 	// Phase 4: Start telemetry streamer
 	walInst, err := wal.NewDiskWAL(dataDir, 50*1024*1024) // 50MB
@@ -49,13 +64,11 @@ func main() {
 
 	streamer := &agentTelemetry.Streamer{
 		WAL:        walInst,
+		Monitor:    monitor,
 		BackendURL: backendURL,
 		VMID:       vmID,
 		DataDir:    dataDir,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	fmt.Println("Starting telemetry streamer...")
 	go func() {
 		if err := streamer.Run(ctx); err != nil && err != context.Canceled {
@@ -65,7 +78,8 @@ func main() {
 
 	// Phase 5: Start log collector
 	logCollector := &agentTelemetry.LogCollector{
-		WAL: walInst,
+		WAL:     walInst,
+		Monitor: monitor,
 	}
 	logPath := os.Getenv("LOG_PATH")
 	if logPath == "" {
@@ -81,7 +95,7 @@ func main() {
 	}
 }
 
-func runBootstrap(dataDir, backendURL, vmID string) error {
+func runBootstrap(dataDir, backendURL, vmID, ott string) error {
 	// 1. Generate private key locally
 	key, err := bootstrap.GenerateKey()
 	if err != nil {
@@ -109,7 +123,10 @@ func runBootstrap(dataDir, backendURL, vmID string) error {
 	defer conn.Close()
 
 	client := telemetry.NewAgentIdentityClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	
+	// Add OTT to metadata
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+ott)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// 4. Request certificate signing

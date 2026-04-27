@@ -57,6 +57,16 @@ func UpdateVM(db *sql.DB, id, name, host, managementUsername, authType, credenti
 	return err
 }
 
+// UpdateVMStatus updates only the connectivity status of a VM and records the heartbeat.
+func UpdateVMStatus(db *sql.DB, id, status string) error {
+	if status == "online" {
+		_, err := db.Exec(`UPDATE vms SET status=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?`, status, id)
+		return err
+	}
+	_, err := db.Exec(`UPDATE vms SET status=? WHERE id=?`, status, id)
+	return err
+}
+
 // nullableStr converts an empty string to nil so SQLite stores NULL instead of "".
 func nullableStr(s string) interface{} {
 	if s == "" {
@@ -246,5 +256,11 @@ func IsCertificateRevoked(db *sql.DB, serial string) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// RevokeAgentCertificates marks all certificates for a machine as revoked.
+func RevokeAgentCertificates(db *sql.DB, machineID string) error {
+	_, err := db.Exec(`UPDATE agent_certificates SET revoked_at = ?, revocation_reason = 'Administrative revocation' WHERE machine_id = ?`, time.Now(), machineID)
+	return err
 }
 

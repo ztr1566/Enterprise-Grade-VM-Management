@@ -10,31 +10,32 @@ import (
 	"path/filepath"
 	"time"
 
+	"backend/internal/agent/governance"
 	"backend/internal/agent/wal"
 	"backend/internal/api/grpc/telemetry"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 )
 
 // Streamer handles the metric collection loop and mTLS streaming to the backend.
 type Streamer struct {
 	WAL        *wal.DiskWAL
+	Monitor    *governance.Monitor
 	BackendURL string
 	VMID       string
 	DataDir    string
+	client     *AgentClient
 }
 
 // Run starts the collection and streaming loop.
 func (s *Streamer) Run(ctx context.Context) error {
-	// 1. Load mTLS identity
-	cert, err := tls.LoadX509KeyPair(
-		filepath.Join(s.DataDir, "agent.crt"),
+	s.client = NewAgentClient(
+		s.VMID,
+		s.BackendURL,
 		filepath.Join(s.DataDir, "agent.key"),
+		filepath.Join(s.DataDir, "agent.crt"),
+		filepath.Join(s.DataDir, "ca.crt"),
 	)
-	if err != nil {
-		return fmt.Errorf("failed to load agent key pair: %w", err)
-	}
 
+	// 1. Setup dynamic mTLS identity
 	caCert, err := os.ReadFile(filepath.Join(s.DataDir, "ca.crt"))
 	if err != nil {
 		return fmt.Errorf("failed to read CA certificate: %w", err)
@@ -43,12 +44,21 @@ func (s *Streamer) Run(ctx context.Context) error {
 	certPool.AppendCertsFromPEM(caCert)
 
 	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      certPool,
+		GetClientCertificate: func(info *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			cert, err := tls.LoadX509KeyPair(
+				filepath.Join(s.DataDir, "agent.crt"),
+				filepath.Join(s.DataDir, "agent.key"),
+			)
+			if err != nil {
+				return nil, err
+			}
+			return &cert, nil
+		},
+		RootCAs: certPool,
 	}
 
-	// 2. Establish mTLS gRPC connection
-	conn, err := grpc.NewClient(s.BackendURL, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
+	// 2. Establish mTLS gRPC connection with backoff
+	conn, err := DialWithBackoff(ctx, s.BackendURL, tlsConfig)
 	if err != nil {
 		return fmt.Errorf("failed to connect to backend: %w", err)
 	}
@@ -63,6 +73,15 @@ func (s *Streamer) Run(ctx context.Context) error {
 	flushTicker := time.NewTicker(5 * time.Second)
 	defer flushTicker.Stop()
 
+	renewalTicker := time.NewTicker(6 * time.Hour)
+	defer renewalTicker.Stop()
+
+	// Initial renewal check
+	if err := s.client.CheckAndRenew(ctx); err != nil {
+		log.Printf("Initial renewal check failed: %v", err)
+	}
+
+	sender := &Sender{VMID: s.VMID}
 	fmt.Printf("Starting telemetry stream for VM: %s\n", s.VMID)
 
 	for {
@@ -70,7 +89,8 @@ func (s *Streamer) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			// Sample and Push to WAL
+			// Always sample to maintain heartbeats, even if throttled.
+			// Hardware sampling is lightweight.
 			sample, err := CollectSample()
 			if err != nil {
 				log.Printf("Failed to collect sample: %v", err)
@@ -80,16 +100,48 @@ func (s *Streamer) Run(ctx context.Context) error {
 				log.Printf("Failed to push to WAL: %v", err)
 			}
 		case <-flushTicker.C:
+			// Apply backpressure to the heavy lifting (Disk I/O, Serialization, Networking)
+			if s.Monitor != nil && s.Monitor.IsThrottled() {
+				// Send a minimal heartbeat to avoid being marked offline
+				if err := s.sendHeartbeat(ctx, client); err != nil {
+					log.Printf("Failed to send heartbeat: %v", err)
+				}
+				continue
+			}
+
 			// Attempt to stream WAL contents
-			if err := s.flushWAL(ctx, client); err != nil {
+			if err := s.flushWAL(ctx, client, sender); err != nil {
 				log.Printf("Failed to flush WAL: %v", err)
+			}
+		case <-renewalTicker.C:
+			if err := s.client.CheckAndRenew(ctx); err != nil {
+				log.Printf("Periodic renewal check failed: %v", err)
 			}
 		}
 	}
 }
 
-func (s *Streamer) flushWAL(ctx context.Context, client telemetry.TelemetryIngestionClient) error {
-	entries, err := s.WAL.ReadAll()
+func (s *Streamer) sendHeartbeat(ctx context.Context, client telemetry.TelemetryIngestionClient) error {
+	stream, err := client.StreamMetricsBatch(ctx)
+	if err != nil {
+		return err
+	}
+
+	batch := &telemetry.MetricsBatch{
+		VmId:    s.VMID,
+		Samples: []*telemetry.MetricSample{},
+	}
+
+	if err := stream.Send(batch); err != nil {
+		return err
+	}
+
+	_, err = stream.CloseAndRecv()
+	return err
+}
+
+func (s *Streamer) flushWAL(ctx context.Context, client telemetry.TelemetryIngestionClient, sender *Sender) error {
+	entries, err := s.WAL.ReadAllAndClear()
 	if err != nil || len(entries) == 0 {
 		return err
 	}
@@ -97,81 +149,28 @@ func (s *Streamer) flushWAL(ctx context.Context, client telemetry.TelemetryInges
 	var metrics []*telemetry.MetricSample
 	var logs []*telemetry.LogEntry
 
-	for _, e := range entries {
-		if e.Metric != nil {
-			metrics = append(metrics, e.Metric)
+	for _, res := range entries {
+		if res.Metric != nil {
+			metrics = append(metrics, res.Metric)
 		}
-		if e.Log != nil {
-			logs = append(logs, e.Log)
+		if res.Log != nil {
+			logs = append(logs, res.Log)
 		}
 	}
 
 	// Stream Metrics if present
 	if len(metrics) > 0 {
-		if err := s.streamMetrics(ctx, client, metrics); err != nil {
+		if err := sender.StreamMetrics(ctx, client, metrics); err != nil {
 			return fmt.Errorf("failed to stream metrics: %w", err)
 		}
 	}
 
 	// Stream Logs if present
 	if len(logs) > 0 {
-		if err := s.streamLogs(ctx, client, logs); err != nil {
+		if err := sender.StreamLogs(ctx, client, logs); err != nil {
 			return fmt.Errorf("failed to stream logs: %w", err)
 		}
 	}
 
-	// Only clear WAL if all present streams succeeded
-	return s.WAL.Clear()
-}
-
-func (s *Streamer) streamMetrics(ctx context.Context, client telemetry.TelemetryIngestionClient, samples []*telemetry.MetricSample) error {
-	stream, err := client.StreamMetricsBatch(ctx)
-	if err != nil {
-		return err
-	}
-
-	for i := 0; i < len(samples); i += 100 {
-		end := i + 100
-		if end > len(samples) {
-			end = len(samples)
-		}
-
-		batch := &telemetry.MetricsBatch{
-			VmId:    s.VMID,
-			Samples: samples[i:end],
-		}
-
-		if err := stream.Send(batch); err != nil {
-			return err
-		}
-	}
-
-	_, err = stream.CloseAndRecv()
-	return err
-}
-
-func (s *Streamer) streamLogs(ctx context.Context, client telemetry.TelemetryIngestionClient, logs []*telemetry.LogEntry) error {
-	stream, err := client.StreamLogsBatch(ctx)
-	if err != nil {
-		return err
-	}
-
-	for i := 0; i < len(logs); i += 100 {
-		end := i + 100
-		if end > len(logs) {
-			end = len(logs)
-		}
-
-		batch := &telemetry.LogsBatch{
-			VmId:    s.VMID,
-			Entries: logs[i:end],
-		}
-
-		if err := stream.Send(batch); err != nil {
-			return err
-		}
-	}
-
-	_, err = stream.CloseAndRecv()
-	return err
+	return nil
 }

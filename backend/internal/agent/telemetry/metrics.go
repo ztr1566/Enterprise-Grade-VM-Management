@@ -44,3 +44,4 @@ func CollectSample() (*telemetry.MetricSample, error) {
 
 	return sample, nil
 }
+
